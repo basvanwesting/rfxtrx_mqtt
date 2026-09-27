@@ -2,8 +2,10 @@ defmodule ForestShuttle.Rfxtrx do
   @moduledoc """
   Owns the serial port to the RFXtrx433XL.
 
-  On (re)connect: reset, wait, flush, request status. Commands are serialised;
-  each one waits for the transmitter ACK carrying its sequence number.
+  On (re)connect: reset, wait, flush, request status, start receiver. Only the
+  "Copyright RFXCOM" answer to the start makes the device ready: before that it
+  ACKs transmit commands without sending them. Commands are serialised; each
+  one waits for the transmitter ACK carrying its sequence number.
   The port may be absent or vanish (USB replug); the server keeps retrying
   instead of crashing, and pending callers get `{:error, :disconnected}`.
   """
@@ -24,6 +26,7 @@ defmodule ForestShuttle.Rfxtrx do
             buffer: <<>>,
             seq: 0,
             status: nil,
+            ready: false,
             pending: nil,
             queue: :queue.new(),
             reset_delay_ms: @reset_delay_ms,
@@ -73,7 +76,7 @@ defmodule ForestShuttle.Rfxtrx do
       Logger.info("rfxtrx: opened #{device}, resetting")
       :ok = state.uart_mod.write(state.uart_pid, Packet.reset())
       Process.send_after(self(), :request_status, state.reset_delay_ms)
-      {:noreply, %{state | device: device, buffer: <<>>, status: nil}}
+      {:noreply, %{state | device: device, buffer: <<>>, status: nil, ready: false}}
     else
       {:error, reason} ->
         Logger.warning("rfxtrx: cannot open #{state.port}: #{inspect(reason)}, retrying")
@@ -127,8 +130,22 @@ defmodule ForestShuttle.Rfxtrx do
   # -- Internals --------------------------------------------------------------
 
   defp handle_frame({:status, _seq, status}, state) do
-    Logger.info("rfxtrx: ready, transceiver #{status.transceiver_type} fw #{status.firmware}")
-    maybe_transmit(%{state | status: status})
+    Logger.info("rfxtrx: transceiver #{status.transceiver_type} fw #{status.firmware}, starting")
+    state = %{state | status: status, seq: Packet.next_seq(state.seq)}
+    :ok = state.uart_mod.write(state.uart_pid, Packet.start_receiver(state.seq))
+    state
+  end
+
+  defp handle_frame({:started, _seq, "Copyright RFXCOM"}, state) do
+    Logger.info("rfxtrx: ready")
+    maybe_transmit(%{state | ready: true})
+  end
+
+  # Early firmware does not know the start command and is operational without it.
+  defp handle_frame({:not_understood, _seq}, %{ready: false, status: status} = state)
+       when status != nil do
+    Logger.info("rfxtrx: ready (firmware without start command)")
+    maybe_transmit(%{state | ready: true})
   end
 
   defp handle_frame({:ack, seq, code}, %{pending: {from, seq, timer}} = state) do
@@ -147,8 +164,7 @@ defmodule ForestShuttle.Rfxtrx do
   defp ack_result(other), do: {:error, other}
 
   # Transmit the next queued command when the device is ready and nothing is in flight.
-  defp maybe_transmit(%{pending: nil, status: status, device: device} = state)
-       when status != nil and device != nil do
+  defp maybe_transmit(%{pending: nil, ready: true} = state) do
     case :queue.out(state.queue) do
       {{:value, {from, id, unit, command}}, queue} ->
         seq = Packet.next_seq(state.seq)
@@ -172,7 +188,16 @@ defmodule ForestShuttle.Rfxtrx do
         do: GenServer.reply(from, {:error, :disconnected})
 
     Process.send_after(self(), :connect, state.reconnect_ms)
-    %{state | device: nil, status: nil, pending: nil, queue: :queue.new(), buffer: <<>>}
+
+    %{
+      state
+      | device: nil,
+        status: nil,
+        ready: false,
+        pending: nil,
+        queue: :queue.new(),
+        buffer: <<>>
+    }
   end
 
   # Accepts a glob, a symlink (e.g. /dev/serial/by-id/...) or a device name;

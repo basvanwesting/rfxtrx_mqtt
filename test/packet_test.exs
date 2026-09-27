@@ -5,6 +5,7 @@ defmodule ForestShuttle.Rfxtrx.PacketTest do
   test "interface control packets are 14 bytes" do
     assert Packet.reset() == <<0x0D, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
     assert Packet.status_request(7) == <<0x0D, 0, 0, 7, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
+    assert Packet.start_receiver(8) == <<0x0D, 0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
   end
 
   test "blinds1 T7 packs 28-bit id and unit into four bytes" do
@@ -38,6 +39,10 @@ defmodule ForestShuttle.Rfxtrx.PacketTest do
     assert {:status, 3, %{transceiver_type: 0x53, firmware: 0xF2}} =
              Packet.decode(<<0x14, 0x01, 0x00, 3, 0x02, 0x53, 0xF2, 0::8*14>>)
 
+    assert Packet.decode(<<0x14, 0x01, 0x07, 4, 0x07, "Copyright RFXCOM">>) ==
+             {:started, 4, "Copyright RFXCOM"}
+
+    assert Packet.decode(<<0x14, 0x01, 0xFF, 4, 0x07, 0::8*16>>) == {:not_understood, 4}
     assert {:unknown, 0x20, 0, 1, <<1, 2>>} = Packet.decode(<<0x05, 0x20, 0, 1, 1, 2>>)
   end
 

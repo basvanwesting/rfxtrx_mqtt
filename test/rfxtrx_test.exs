@@ -4,6 +4,7 @@ defmodule ForestShuttle.RfxtrxTest do
   alias ForestShuttle.Rfxtrx.Packet
 
   @status <<0x14, 0x01, 0x00, 1, 0x02, 0x53, 0xF2, 0::8*14>>
+  @started <<0x14, 0x01, 0x07, 2, 0x07, "Copyright RFXCOM">>
 
   defp start(opts \\ []) do
     opts =
@@ -28,12 +29,40 @@ defmodule ForestShuttle.RfxtrxTest do
     assert_receive :uart_flush
     assert_receive {:uart_write, <<0x0D, 0, 0, 1, 2, _::binary>>}
     send(pid, {:circuits_uart, "fake", @status})
+    assert_receive {:uart_write, <<0x0D, 0, 0, 2, 7, _::binary>>}
+    send(pid, {:circuits_uart, "fake", @started})
     pid
   end
 
-  test "handshake: reset, flush, status request; status reply makes it ready" do
+  test "handshake: reset, flush, status request, start receiver" do
     pid = ready()
     assert %{transceiver_type: 0x53} = Rfxtrx.status(pid)
+  end
+
+  test "commands wait until the receiver is started" do
+    pid = start()
+    assert_receive {:uart_write, _reset}
+    assert_receive {:uart_write, <<0x0D, 0, 0, 1, 2, _::binary>>}
+    task = Task.async(fn -> Rfxtrx.send_command(pid, 1, 1, :open) end)
+    send(pid, {:circuits_uart, "fake", @status})
+    assert_receive {:uart_write, <<0x0D, 0, 0, 2, 7, _::binary>>}
+    refute_receive {:uart_write, <<0x09, _::binary>>}, 30
+    send(pid, {:circuits_uart, "fake", @started})
+    assert_receive {:uart_write, <<0x09, 0x19, 0x07, seq, _::binary>>}
+    send(pid, {:circuits_uart, "fake", <<0x04, 0x02, 0x01, seq, 0x00>>})
+    assert Task.await(task) == :ok
+  end
+
+  test "firmware that does not understand start is ready after status" do
+    pid = start()
+    assert_receive {:uart_write, <<0x0D, 0, 0, 1, 2, _::binary>>}
+    send(pid, {:circuits_uart, "fake", @status})
+    assert_receive {:uart_write, <<0x0D, 0, 0, 2, 7, _::binary>>}
+    send(pid, {:circuits_uart, "fake", <<0x14, 0x01, 0xFF, 2, 0x07, 0::8*16>>})
+    task = Task.async(fn -> Rfxtrx.send_command(pid, 1, 1, :open) end)
+    assert_receive {:uart_write, <<0x09, _, _, seq, _::binary>>}
+    send(pid, {:circuits_uart, "fake", <<0x04, 0x02, 0x01, seq, 0x00>>})
+    assert Task.await(task) == :ok
   end
 
   test "command waits for the ACK with its sequence number" do

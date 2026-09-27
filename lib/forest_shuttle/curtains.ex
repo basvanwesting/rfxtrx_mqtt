@@ -88,6 +88,7 @@ defmodule ForestShuttle.Curtains do
       {:ok, %{device: %{id: id, unit: unit}} = r} ->
         case state.transmit.(id, unit, cmd) do
           :ok ->
+            Logger.info("curtains: #{room} #{cmd}")
             {:reply, :ok, put_room(state, room, apply_command(r, room, cmd, state))}
 
           {:error, reason} = error ->

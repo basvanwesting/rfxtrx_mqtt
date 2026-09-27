@@ -7,8 +7,9 @@ else that speaks MQTT. Replaces the old node `forest-shuttle-server`.
 ## Protocol
 
 RFXtrx frames are `<<len, type, subtype, seq, payload>>`. On connect the
-server sends reset (14 bytes), waits 300 ms, flushes, and requests status;
-the interface response (type 0x01) marks it ready. A curtain command is one
+server sends reset (14 bytes), waits 300 ms, flushes, requests status, and
+sends start receiver; the "Copyright RFXCOM" answer marks it ready. Without
+the start the device ACKs transmit commands but sends nothing. A curtain command is one
 Blinds1 packet, subtype 0x07 (T7 Forest): `<<0x09, 0x19, 0x07, seq,
 id::28, unit::4, cmnd, 0x00>>` with cmnd 0 open, 1 close, 2 stop, 3 confirm
 (pairing). Every command is answered by a transmitter response

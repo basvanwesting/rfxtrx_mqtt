@@ -8,10 +8,14 @@ defmodule ForestShuttle.Curtains do
 
   Topics (prefix configurable, default `forest_shuttle`):
 
-      <prefix>/<room>/set              <- OPEN | CLOSE | STOP
-      <prefix>/<room>/target_position  <- 0..100 (<= 50 closes, > 50 opens)
-      <prefix>/<room>/current_position -> 0 | 50 | 100, retained
-      <prefix>/<room>/position_state   -> INCREASING | DECREASING | STOPPED, retained
+      <prefix>/<room>/set                  <- OPEN | CLOSE | STOP
+      <prefix>/<room>/target_position/set  <- 0..100 (<= 50 closes, > 50 opens)
+      <prefix>/<room>/target_position      -> 0 | 100, retained
+      <prefix>/<room>/current_position     -> 0 | 50 | 100, retained
+      <prefix>/<room>/position_state       -> INCREASING | DECREASING | STOPPED, retained
+
+  Command topics and state topics never coincide: the retained state echo
+  would otherwise come back as a command and loop.
   """
 
   use GenServer

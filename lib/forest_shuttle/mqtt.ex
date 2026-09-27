@@ -16,7 +16,7 @@ defmodule ForestShuttle.Mqtt do
         handler: {__MODULE__.Handler, prefix: prefix},
         subscriptions: [
           {"#{prefix}/+/set", 0},
-          {"#{prefix}/+/target_position", 0},
+          {"#{prefix}/+/target_position/set", 0},
           {"#{prefix}/+/current_position", 0}
         ],
         will: %Tortoise311.Package.Publish{
@@ -73,13 +73,17 @@ defmodule ForestShuttle.Mqtt do
       {:ok, state}
     end
 
-    def handle_message([prefix, room, "target_position"], payload, %{prefix: prefix} = state) do
+    def handle_message(
+          [prefix, room, "target_position", "set"],
+          payload,
+          %{prefix: prefix} = state
+        ) do
       case Integer.parse(payload) do
         {target, ""} when target in 0..100 ->
           log_result(room, target, Curtains.set_target(room, target))
 
         _ ->
-          Logger.warning("mqtt: #{room}/target_position bad payload #{inspect(payload)}")
+          Logger.warning("mqtt: #{room}/target_position/set bad payload #{inspect(payload)}")
       end
 
       {:ok, state}

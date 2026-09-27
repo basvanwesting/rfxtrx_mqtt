@@ -21,10 +21,14 @@ assumed complete after `FOREST_SHUTTLE_TRAVEL_MS`; a stop mid-travel reports 50.
 ## MQTT topics
 
     forest_shuttle/status                    online | offline (last will), retained
-    forest_shuttle/<room>/set                <- OPEN | CLOSE | STOP
-    forest_shuttle/<room>/target_position    <- 0..100  (<= 50 closes, > 50 opens); echoed as 0|100
-    forest_shuttle/<room>/current_position   -> 0 | 50 | 100, retained
-    forest_shuttle/<room>/position_state     -> INCREASING | DECREASING | STOPPED, retained
+    forest_shuttle/<room>/set                  <- OPEN | CLOSE | STOP
+    forest_shuttle/<room>/target_position/set  <- 0..100  (<= 50 closes, > 50 opens)
+    forest_shuttle/<room>/target_position      -> 0 | 100, retained
+    forest_shuttle/<room>/current_position     -> 0 | 50 | 100, retained
+    forest_shuttle/<room>/position_state       -> INCREASING | DECREASING | STOPPED, retained
+
+Command topics (`.../set`) and state topics are disjoint on purpose: the
+retained state echo must never come back as a command.
 
 Retained `current_position` doubles as persistence: on start the server
 subscribes to it and adopts the broker's value.

@@ -79,3 +79,7 @@ For `rfy`, open is up and close is down.
     journalctl --user -u rfxtrx_mqtt -f
 
 Needs the user in group `uucp` for `/dev/ttyUSB0`, and `loginctl enable-linger`.
+
+## License
+
+MIT, see `LICENSE`.

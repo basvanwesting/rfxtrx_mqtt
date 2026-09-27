@@ -1,10 +1,10 @@
-defmodule ForestShuttle.Rfxtrx.Packet do
+defmodule RfxtrxMqtt.Rfxtrx.Packet do
   @moduledoc """
   Encoding and decoding of RFXtrx frames.
 
   Wire format: `<<length_of_rest, packet_type, subtype, seqnbr, payload::binary>>`.
-  Only what the Forest Shuttle needs: interface control (0x00), interface
-  response (0x01), transmitter response (0x02) and Blinds1 (0x19).
+  Interface control (0x00), interface response (0x01), transmitter response
+  (0x02), Blinds1 (0x19, subtype T7 Forest) and RFY (0x1A, Somfy RTS).
   """
 
   import Bitwise
@@ -14,10 +14,13 @@ defmodule ForestShuttle.Rfxtrx.Packet do
   @transmitter_response 0x02
   @blinds1 0x19
   @blinds_t7_forest 0x07
+  @rfy 0x1A
+  @rfy_standard 0x00
 
-  @commands %{open: 0x00, close: 0x01, stop: 0x02, confirm: 0x03}
+  @blinds1_commands %{open: 0x00, close: 0x01, stop: 0x02, confirm: 0x03}
+  @rfy_commands %{stop: 0x00, up: 0x01, down: 0x03, program: 0x07}
 
-  @type command :: :open | :close | :stop | :confirm
+  @type protocol :: :blinds_t7 | :rfy
 
   @doc "Interface control: reset. The device answers nothing; wait 300 ms and flush."
   def reset(seq \\ 0), do: <<0x0D, @interface_control, 0x00, seq, 0x00, 0::72>>
@@ -36,10 +39,25 @@ defmodule ForestShuttle.Rfxtrx.Packet do
   Blinds1 subtype T7 (Forest). The 28-bit id and the 4-bit unit code share
   four bytes: `<<id::28, unit::4>>`. Unit 0 addresses all units of the id.
   """
-  def blinds1(id, unit, command, seq, subtype \\ @blinds_t7_forest)
+  def blinds1(id, unit, command, seq)
       when id in 0..0x0FFFFFFF and unit in 0..15 and seq in 0..255 do
-    <<0x09, @blinds1, subtype, seq, id::28, unit::4, Map.fetch!(@commands, command), 0x00>>
+    <<0x09, @blinds1, @blinds_t7_forest, seq, id::28, unit::4,
+      Map.fetch!(@blinds1_commands, command), 0x00>>
   end
+
+  @doc """
+  RFY (Somfy RTS). The RFXtrx is a virtual remote with this 20-bit id and unit
+  (0..4); it keeps the rolling code itself. `:program` registers the remote
+  in a motor that is in programming mode (PROG held on an original remote).
+  """
+  def rfy(id, unit, command, seq) when id in 1..0x0FFFFF and unit in 0..4 and seq in 0..255 do
+    <<0x0C, @rfy, @rfy_standard, seq, id::24, unit, Map.fetch!(@rfy_commands, command), 0::32>>
+  end
+
+  @doc "Encodes a command for a protocol; the commands are the protocol's own."
+  @spec encode(protocol(), non_neg_integer(), non_neg_integer(), atom(), 0..255) :: binary()
+  def encode(:blinds_t7, id, unit, command, seq), do: blinds1(id, unit, command, seq)
+  def encode(:rfy, id, unit, command, seq), do: rfy(id, unit, command, seq)
 
   @doc "Splits a receive buffer into complete frames; returns the unparsed tail."
   @spec split(binary()) :: {[binary()], binary()}
@@ -62,6 +80,10 @@ defmodule ForestShuttle.Rfxtrx.Packet do
 
   def decode(<<_len, @interface_response, 0xFF, seq, _rest::binary>>),
     do: {:not_understood, seq}
+
+  # Answer to an RFY command whose id/unit was never programmed into this RFXtrx.
+  def decode(<<_len, @interface_response, 0x01, seq, _rest::binary>>),
+    do: {:unknown_rfy_remote, seq}
 
   def decode(<<_len, @interface_response, 0x00, seq, _cmnd, type, fw, rest::binary>>),
     do: {:status, seq, %{transceiver_type: type, firmware: fw, raw: rest}}

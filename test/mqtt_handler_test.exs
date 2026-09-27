@@ -1,17 +1,25 @@
-defmodule ForestShuttle.Mqtt.HandlerTest do
+defmodule RfxtrxMqtt.Mqtt.HandlerTest do
   use ExUnit.Case, async: true
-  alias ForestShuttle.{Curtains, Mqtt.Handler}
+  alias RfxtrxMqtt.{Covers, Mqtt.Handler}
+  alias RfxtrxMqtt.Devices.Device
 
-  # The handler calls the globally named Curtains; start one with a fake transmitter.
+  # The handler calls the globally named Covers; start one with a fake transmitter.
   setup do
     me = self()
 
     start_supervised!(
-      {Curtains,
-       rooms: %{"woonkamer" => %{id: 1, unit: 1}},
-       travel_ms: 10_000,
+      {Covers,
+       devices: %{
+         "woonkamer" => %Device{
+           name: "woonkamer",
+           protocol: :blinds_t7,
+           id: 1,
+           unit: 1,
+           travel_ms: 10_000
+         }
+       },
        topic_prefix: "fs",
-       transmit: fn _, _, cmd ->
+       transmit: fn _, _, _, cmd ->
          send(me, {:tx, cmd})
          :ok
        end,
@@ -41,7 +49,7 @@ defmodule ForestShuttle.Mqtt.HandlerTest do
              Handler.handle_message(["fs", "woonkamer", "current_position"], "100", state)
 
     refute_receive {:tx, _}
-    assert Curtains.status()["woonkamer"].position == 100, "current_position only hydrates"
+    assert Covers.status()["woonkamer"].position == 100, "current_position only hydrates"
   end
 
   test "bad payloads are ignored", %{state: state} do

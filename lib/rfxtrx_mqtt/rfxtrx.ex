@@ -1,4 +1,4 @@
-defmodule ForestShuttle.Rfxtrx do
+defmodule RfxtrxMqtt.Rfxtrx do
   @moduledoc """
   Owns the serial port to the RFXtrx433XL.
 
@@ -12,7 +12,7 @@ defmodule ForestShuttle.Rfxtrx do
 
   use GenServer
   require Logger
-  alias ForestShuttle.Rfxtrx.Packet
+  alias RfxtrxMqtt.Rfxtrx.Packet
 
   @reset_delay_ms 300
   @ack_timeout_ms 5_000
@@ -40,11 +40,17 @@ defmodule ForestShuttle.Rfxtrx do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @doc "Sends a Blinds1 T7 command and waits for the ACK."
-  @spec send_command(GenServer.server(), non_neg_integer(), 0..15, Packet.command()) ::
+  @doc "Sends a protocol command (see `Packet.encode/5`) and waits for the ACK."
+  @spec send_command(
+          GenServer.server(),
+          Packet.protocol(),
+          non_neg_integer(),
+          non_neg_integer(),
+          atom()
+        ) ::
           :ok | {:error, term()}
-  def send_command(server \\ __MODULE__, id, unit, command) do
-    GenServer.call(server, {:send, id, unit, command}, 15_000)
+  def send_command(server \\ __MODULE__, protocol, id, unit, command) do
+    GenServer.call(server, {:send, {protocol, id, unit, command}}, 15_000)
   end
 
   @doc "Interface status as reported after connect, or nil when not connected."
@@ -60,7 +66,7 @@ defmodule ForestShuttle.Rfxtrx do
     state = %__MODULE__{
       uart_mod: uart_mod,
       uart_pid: uart_pid,
-      port: Keyword.get(opts, :port, Application.fetch_env!(:forest_shuttle, :rfxtrx_port)),
+      port: Keyword.get(opts, :port, Application.fetch_env!(:rfxtrx_mqtt, :rfxtrx_port)),
       reset_delay_ms: Keyword.get(opts, :reset_delay_ms, @reset_delay_ms),
       ack_timeout_ms: Keyword.get(opts, :ack_timeout_ms, @ack_timeout_ms),
       reconnect_ms: Keyword.get(opts, :reconnect_ms, @reconnect_ms)
@@ -88,11 +94,11 @@ defmodule ForestShuttle.Rfxtrx do
   @impl true
   def handle_call(:status, _from, state), do: {:reply, state.status, state}
 
-  def handle_call({:send, _, _, _}, _from, %{device: nil} = state),
+  def handle_call({:send, _}, _from, %{device: nil} = state),
     do: {:reply, {:error, :disconnected}, state}
 
-  def handle_call({:send, id, unit, command}, from, state) do
-    state = %{state | queue: :queue.in({from, id, unit, command}, state.queue)}
+  def handle_call({:send, command}, from, state) do
+    state = %{state | queue: :queue.in({from, command}, state.queue)}
     {:noreply, maybe_transmit(state)}
   end
 
@@ -148,15 +154,21 @@ defmodule ForestShuttle.Rfxtrx do
     maybe_transmit(%{state | ready: true})
   end
 
-  defp handle_frame({:ack, seq, code}, %{pending: {from, seq, timer}} = state) do
-    Process.cancel_timer(timer)
-    GenServer.reply(from, ack_result(code))
-    maybe_transmit(%{state | pending: nil})
-  end
+  defp handle_frame({:ack, seq, code}, %{pending: {_, seq, _}} = state),
+    do: complete(state, ack_result(code))
+
+  defp handle_frame({:unknown_rfy_remote, seq}, %{pending: {_, seq, _}} = state),
+    do: complete(state, {:error, :unknown_rfy_remote})
 
   defp handle_frame(other, state) do
     Logger.debug("rfxtrx: ignoring frame #{inspect(other)}")
     state
+  end
+
+  defp complete(%{pending: {from, _seq, timer}} = state, result) do
+    Process.cancel_timer(timer)
+    GenServer.reply(from, result)
+    maybe_transmit(%{state | pending: nil})
   end
 
   defp ack_result(:ok), do: :ok
@@ -166,9 +178,12 @@ defmodule ForestShuttle.Rfxtrx do
   # Transmit the next queued command when the device is ready and nothing is in flight.
   defp maybe_transmit(%{pending: nil, ready: true} = state) do
     case :queue.out(state.queue) do
-      {{:value, {from, id, unit, command}}, queue} ->
+      {{:value, {from, {protocol, id, unit, command}}}, queue} ->
         seq = Packet.next_seq(state.seq)
-        :ok = state.uart_mod.write(state.uart_pid, Packet.blinds1(id, unit, command, seq))
+
+        :ok =
+          state.uart_mod.write(state.uart_pid, Packet.encode(protocol, id, unit, command, seq))
+
         timer = Process.send_after(self(), {:ack_timeout, seq}, state.ack_timeout_ms)
         %{state | queue: queue, seq: seq, pending: {from, seq, timer}}
 
@@ -184,7 +199,7 @@ defmodule ForestShuttle.Rfxtrx do
 
     if state.pending, do: GenServer.reply(elem(state.pending, 0), {:error, :disconnected})
 
-    for {from, _, _, _} <- :queue.to_list(state.queue),
+    for {from, _} <- :queue.to_list(state.queue),
         do: GenServer.reply(from, {:error, :disconnected})
 
     Process.send_after(self(), :connect, state.reconnect_ms)

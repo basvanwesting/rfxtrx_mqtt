@@ -1,4 +1,4 @@
-defmodule ForestShuttle.FakeUART do
+defmodule RfxtrxMqtt.FakeUART do
   @moduledoc """
   Stands in for Circuits.UART. Every write is forwarded to the owner as
   `{:uart_write, data}`; the test injects device output by sending

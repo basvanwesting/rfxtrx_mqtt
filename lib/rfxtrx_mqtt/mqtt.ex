@@ -1,13 +1,13 @@
-defmodule ForestShuttle.Mqtt do
-  @moduledoc "MQTT connection (Tortoise311) and the handler routing messages to Curtains."
+defmodule RfxtrxMqtt.Mqtt do
+  @moduledoc "MQTT connection (Tortoise311) and the handler routing messages to Covers."
 
   require Logger
 
-  @client_id "forest_shuttle"
+  @client_id "rfxtrx_mqtt"
 
   def child_spec(_opts) do
-    mqtt = Application.fetch_env!(:forest_shuttle, :mqtt)
-    prefix = Application.fetch_env!(:forest_shuttle, :topic_prefix)
+    mqtt = Application.fetch_env!(:rfxtrx_mqtt, :mqtt)
+    prefix = Application.fetch_env!(:rfxtrx_mqtt, :topic_prefix)
 
     opts =
       [
@@ -46,7 +46,7 @@ defmodule ForestShuttle.Mqtt do
     @moduledoc false
     use Tortoise311.Handler
     require Logger
-    alias ForestShuttle.Curtains
+    alias RfxtrxMqtt.Covers
 
     @impl true
     def init(opts), do: {:ok, %{prefix: Keyword.fetch!(opts, :prefix)}}
@@ -54,7 +54,7 @@ defmodule ForestShuttle.Mqtt do
     @impl true
     def connection(:up, state) do
       Logger.info("mqtt: connected")
-      ForestShuttle.Mqtt.publish("#{state.prefix}/status", "online")
+      RfxtrxMqtt.Mqtt.publish("#{state.prefix}/status", "online")
       {:ok, state}
     end
 
@@ -64,34 +64,34 @@ defmodule ForestShuttle.Mqtt do
     end
 
     @impl true
-    def handle_message([prefix, room, "set"], payload, %{prefix: prefix} = state) do
-      case Curtains.parse_command(payload) do
-        {:ok, cmd} -> log_result(room, cmd, Curtains.command(room, cmd))
-        {:error, reason} -> Logger.warning("mqtt: #{room}/set #{inspect(reason)}")
+    def handle_message([prefix, device, "set"], payload, %{prefix: prefix} = state) do
+      case Covers.parse_command(payload) do
+        {:ok, cmd} -> log_result(device, cmd, Covers.command(device, cmd))
+        {:error, reason} -> Logger.warning("mqtt: #{device}/set #{inspect(reason)}")
       end
 
       {:ok, state}
     end
 
     def handle_message(
-          [prefix, room, "target_position", "set"],
+          [prefix, device, "target_position", "set"],
           payload,
           %{prefix: prefix} = state
         ) do
       case Integer.parse(payload) do
         {target, ""} when target in 0..100 ->
-          log_result(room, target, Curtains.set_target(room, target))
+          log_result(device, target, Covers.set_target(device, target))
 
         _ ->
-          Logger.warning("mqtt: #{room}/target_position/set bad payload #{inspect(payload)}")
+          Logger.warning("mqtt: #{device}/target_position/set bad payload #{inspect(payload)}")
       end
 
       {:ok, state}
     end
 
-    def handle_message([prefix, room, "current_position"], payload, %{prefix: prefix} = state) do
+    def handle_message([prefix, device, "current_position"], payload, %{prefix: prefix} = state) do
       case Integer.parse(payload) do
-        {position, ""} -> Curtains.hydrate(room, position)
+        {position, ""} -> Covers.hydrate(device, position)
         _ -> :ok
       end
 
@@ -112,9 +112,9 @@ defmodule ForestShuttle.Mqtt do
     @impl true
     def terminate(_reason, _state), do: :ok
 
-    defp log_result(_room, _what, :ok), do: :ok
+    defp log_result(_device, _what, :ok), do: :ok
 
-    defp log_result(room, what, {:error, reason}),
-      do: Logger.warning("mqtt: #{room} #{inspect(what)} failed: #{inspect(reason)}")
+    defp log_result(device, what, {:error, reason}),
+      do: Logger.warning("mqtt: #{device} #{inspect(what)} failed: #{inspect(reason)}")
   end
 end

@@ -1,0 +1,16 @@
+# ~/.config/systemd/user/rfxtrx_mqtt.service
+# Requires: user in group uucp (serial), `loginctl enable-linger`.
+[Unit]
+Description=RFXtrx433XL covers -> MQTT
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/rfxtrx_mqtt/env
+ExecStart=%h/workspace/rfxtrx_mqtt/_build/prod/rel/rfxtrx_mqtt/bin/rfxtrx_mqtt start
+ExecStop=%h/workspace/rfxtrx_mqtt/_build/prod/rel/rfxtrx_mqtt/bin/rfxtrx_mqtt stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

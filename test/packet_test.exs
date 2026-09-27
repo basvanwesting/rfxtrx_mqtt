@@ -1,6 +1,6 @@
-defmodule ForestShuttle.Rfxtrx.PacketTest do
+defmodule RfxtrxMqtt.Rfxtrx.PacketTest do
   use ExUnit.Case, async: true
-  alias ForestShuttle.Rfxtrx.Packet
+  alias RfxtrxMqtt.Rfxtrx.Packet
 
   test "interface control packets are 14 bytes" do
     assert Packet.reset() == <<0x0D, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
@@ -17,6 +17,24 @@ defmodule ForestShuttle.Rfxtrx.PacketTest do
 
     assert <<_::8*8, 0x02, 0>> = Packet.blinds1(1, 0, :stop, 0)
     assert <<_::8*8, 0x03, 0>> = Packet.blinds1(1, 0, :confirm, 0)
+  end
+
+  test "rfy packs 20-bit id in three bytes, unit, command and four zero bytes" do
+    assert Packet.rfy(0x012345, 1, :up, 5) ==
+             <<0x0C, 0x1A, 0x00, 5, 0x01, 0x23, 0x45, 1, 0x01, 0, 0, 0, 0>>
+
+    assert <<_::8*8, 0x03, _::binary>> = Packet.rfy(1, 0, :down, 0)
+    assert <<_::8*8, 0x00, _::binary>> = Packet.rfy(1, 0, :stop, 0)
+    assert <<_::8*8, 0x07, _::binary>> = Packet.rfy(1, 0, :program, 0)
+    assert byte_size(Packet.rfy(1, 0, :up, 0)) == 13
+    assert_raise FunctionClauseError, fn -> Packet.rfy(0x100000, 1, :up, 0) end
+    assert_raise FunctionClauseError, fn -> Packet.rfy(0, 1, :up, 0) end
+    assert_raise FunctionClauseError, fn -> Packet.rfy(1, 5, :up, 0) end
+  end
+
+  test "encode dispatches on protocol" do
+    assert Packet.encode(:blinds_t7, 1, 1, :open, 3) == Packet.blinds1(1, 1, :open, 3)
+    assert Packet.encode(:rfy, 1, 1, :up, 3) == Packet.rfy(1, 1, :up, 3)
   end
 
   test "blinds1 rejects out of range ids and units" do
@@ -43,6 +61,7 @@ defmodule ForestShuttle.Rfxtrx.PacketTest do
              {:started, 4, "Copyright RFXCOM"}
 
     assert Packet.decode(<<0x14, 0x01, 0xFF, 4, 0x07, 0::8*16>>) == {:not_understood, 4}
+    assert Packet.decode(<<0x14, 0x01, 0x01, 4, 0x00, 0::8*16>>) == {:unknown_rfy_remote, 4}
     assert {:unknown, 0x20, 0, 1, <<1, 2>>} = Packet.decode(<<0x05, 0x20, 0, 1, 1, 2>>)
   end
 

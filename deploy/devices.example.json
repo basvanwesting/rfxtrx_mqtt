@@ -1,0 +1,5 @@
+{
+  "woonkamer": {"protocol": "blinds_t7", "id": "0x0000001", "unit": 1, "travel_ms": 20000},
+  "slaapkamer": {"protocol": "blinds_t7", "id": "0x0000002", "unit": 1, "travel_ms": 20000},
+  "markiezen": {"protocol": "rfy", "id": "0x000001", "unit": 1, "travel_ms": 30000}
+}

@@ -24,7 +24,7 @@ defmodule RfxtrxMqtt.Rfxtrx do
   @reset_delay_ms 300
   @ack_timeout_ms 5_000
   @reconnect_ms 5_000
-  @settle_ms 10_000
+  @settle_ms 15_000
   @handshake_timeout_ms 5_000
 
   defstruct uart: nil,

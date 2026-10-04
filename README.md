@@ -13,7 +13,7 @@ server sends reset (14 bytes), waits 300 ms, flushes, requests status, and
 sends start receiver; the "Copyright RFXCOM" answer marks it ready. Without
 the start the device ACKs transmit commands but sends nothing.
 
-A port that was absent or lost is left alone for 10 s after it appears: a
+A port that was absent or lost is left alone for 15 s after it appears: a
 freshly powered RFXtrx is in its bootloader for its first seconds, and serial
 traffic in that window kept it there (LED steady red, no answer; seen with
 firmware 1052, cured by a power cycle with the server stopped). A handshake

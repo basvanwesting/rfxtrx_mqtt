@@ -125,6 +125,16 @@ defmodule RfxtrxMqtt.CoversTest do
     assert Covers.status(pid)["woonkamer"].position == 0
   end
 
+  test "availability is the RFXtrx's readiness at the moment of publishing" do
+    {:ok, ready} = Agent.start_link(fn -> false end)
+    pid = start(ready?: fn -> Agent.get(ready, & &1) end)
+    Covers.publish_availability(pid)
+    assert_receive {:pub, "fs/status", "offline"}
+    Agent.update(ready, fn _ -> true end)
+    Covers.publish_availability(pid)
+    assert_receive {:pub, "fs/status", "online"}
+  end
+
   test "unknown device" do
     assert Covers.command(start(), "zolder", :open) == {:error, :unknown_device}
   end

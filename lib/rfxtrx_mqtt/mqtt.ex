@@ -54,7 +54,8 @@ defmodule RfxtrxMqtt.Mqtt do
     @impl true
     def connection(:up, state) do
       Logger.info("mqtt: connected")
-      RfxtrxMqtt.Mqtt.publish("#{state.prefix}/status", "online")
+      # The broker replaced the status with the last will ("offline") meanwhile.
+      Covers.publish_availability()
       {:ok, state}
     end
 

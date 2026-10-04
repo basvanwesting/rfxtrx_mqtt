@@ -7,12 +7,15 @@ defmodule RfxtrxMqtt.RfxtrxTest do
   @started <<0x14, 0x01, 0x07, 2, 0x07, "Copyright RFXCOM">>
 
   defp start(opts \\ []) do
+    me = self()
+
     opts =
       Keyword.merge(
         [
           name: nil,
           uart: {FakeUART, owner: self()},
           port: "/dev/null",
+          on_ready_change: fn -> send(me, :ready_change) end,
           reset_delay_ms: 10,
           ack_timeout_ms: 50
         ],
@@ -22,8 +25,8 @@ defmodule RfxtrxMqtt.RfxtrxTest do
     start_supervised!({Rfxtrx, opts})
   end
 
-  defp ready do
-    pid = start()
+  defp ready(opts \\ []) do
+    pid = start(opts)
     assert_receive {:uart_write, reset}
     assert reset == Packet.reset()
     assert_receive :uart_flush
@@ -131,6 +134,63 @@ defmodule RfxtrxMqtt.RfxtrxTest do
     assert_receive {:uart_write, <<0x0C, 0x1A, 0x00, seq, _::binary>>}
     send(pid, {:circuits_uart, "fake", <<0x14, 0x01, 0x01, seq, 0x00, 0::8*16>>})
     assert Task.await(task) == {:error, :unknown_rfy_remote}
+  end
+
+  test "readiness changes are announced, and a finished handshake does not time out" do
+    pid = ready(handshake_timeout_ms: 20)
+    assert_receive :ready_change, 100, "announces itself at start"
+    assert_receive :ready_change, 100, "ready"
+    assert Rfxtrx.ready?(pid)
+    refute_receive :ready_change, 40
+    assert Rfxtrx.ready?(pid)
+
+    send(pid, {:circuits_uart, "fake", {:error, :eio}})
+    assert_receive :ready_change
+    refute Rfxtrx.ready?(pid)
+  end
+
+  test "a restart after a crash announces itself, replacing a stale ready" do
+    pid = ready()
+    assert_receive :ready_change
+    assert_receive :ready_change
+    Process.exit(pid, :kill)
+    assert_receive :ready_change
+  end
+
+  test "a server that is down is not ready" do
+    refute Rfxtrx.ready?(:no_such_rfxtrx)
+  end
+
+  test "a handshake without an answer is abandoned and retried, without settling" do
+    reset = Packet.reset()
+    pid = start(handshake_timeout_ms: 30, reconnect_ms: 10, settle_ms: 5_000)
+    assert_receive :ready_change
+    assert_receive {:uart_write, ^reset}
+    assert_receive {:uart_write, <<0x0D, 0, 0, _, 2, _::binary>>}
+    assert_receive {:uart_write, ^reset}, 200
+    refute Rfxtrx.ready?(pid)
+    refute_received :ready_change
+  end
+
+  test "a port lost through an error is left to boot before it is reopened" do
+    reset = Packet.reset()
+    pid = ready(reconnect_ms: 10, settle_ms: 100)
+    send(pid, {:circuits_uart, "fake", {:error, :eio}})
+    send(pid, {:circuits_uart, "fake", {:error, :eio}})
+    refute_receive {:uart_write, ^reset}, 80
+    assert_receive {:uart_write, ^reset}, 200
+    refute_receive {:uart_write, ^reset}, 150
+  end
+
+  test "a port that appears is left to boot before it is opened" do
+    port = Path.join(System.tmp_dir!(), "rfxtrx-test-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm(port) end)
+    start(port: port, reconnect_ms: 10, settle_ms: 100)
+    refute_receive {:uart_write, _}, 30
+    File.touch!(port)
+    refute_receive {:uart_write, _}, 60
+    assert_receive {:uart_write, reset}, 200
+    assert reset == Packet.reset()
   end
 
   test "missing port keeps retrying without crashing" do

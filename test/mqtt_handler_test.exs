@@ -23,11 +23,17 @@ defmodule RfxtrxMqtt.Mqtt.HandlerTest do
          send(me, {:tx, cmd})
          :ok
        end,
+       ready?: fn -> true end,
        publish: fn topic, payload -> send(me, {:pub, topic, payload}) end}
     )
 
     {:ok, state} = Handler.init(prefix: "fs")
     %{state: state}
+  end
+
+  test "a new connection republishes availability", %{state: state} do
+    assert {:ok, _} = Handler.connection(:up, state)
+    assert_receive {:pub, "fs/status", "online"}
   end
 
   test "set and target_position/set are commands", %{state: state} do

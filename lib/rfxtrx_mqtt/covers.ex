@@ -14,9 +14,15 @@ defmodule RfxtrxMqtt.Covers do
       <prefix>/<device>/target_position      -> 0 | 100, retained
       <prefix>/<device>/current_position     -> 0 | 50 | 100, retained
       <prefix>/<device>/position_state       -> INCREASING | DECREASING | STOPPED, retained
+      <prefix>/status                        -> online | offline, retained
 
   Command topics and state topics never coincide: the retained state echo
   would otherwise come back as a command and loop.
+
+  `status` is online only while the RFXtrx transmits, so a consumer never shows
+  covers as reachable that cannot be moved. It is published from here alone,
+  on every readiness change and whenever the MQTT connection comes up, and
+  always from the RFXtrx's current answer rather than a value carried along.
   """
 
   use GenServer
@@ -29,7 +35,7 @@ defmodule RfxtrxMqtt.Covers do
     rfy: %{open: :up, close: :down, stop: :stop, pair: :program}
   }
 
-  defstruct devices: %{}, transmit: nil, publish: nil, prefix: "rfxtrx"
+  defstruct devices: %{}, transmit: nil, ready?: nil, publish: nil, prefix: "rfxtrx"
 
   # -- API --------------------------------------------------------------------
 
@@ -52,6 +58,10 @@ defmodule RfxtrxMqtt.Covers do
   @doc "Adopts a retained position from the broker when ours is still unknown."
   def hydrate(server \\ __MODULE__, device, position),
     do: GenServer.cast(server, {:hydrate, device, position})
+
+  @doc "Publishes `<prefix>/status` from the RFXtrx's current readiness."
+  def publish_availability(server \\ __MODULE__),
+    do: GenServer.cast(server, :publish_availability)
 
   def status(server \\ __MODULE__), do: GenServer.call(server, :status)
 
@@ -81,6 +91,7 @@ defmodule RfxtrxMqtt.Covers do
           Application.fetch_env!(:rfxtrx_mqtt, :topic_prefix)
         end),
       transmit: Keyword.get(opts, :transmit, &RfxtrxMqtt.Rfxtrx.send_command/4),
+      ready?: Keyword.get(opts, :ready?, &RfxtrxMqtt.Rfxtrx.ready?/0),
       publish: Keyword.get(opts, :publish, &RfxtrxMqtt.Mqtt.publish/2)
     }
 
@@ -128,6 +139,12 @@ defmodule RfxtrxMqtt.Covers do
       _ ->
         {:noreply, state}
     end
+  end
+
+  def handle_cast(:publish_availability, state) do
+    payload = if state.ready?.(), do: "online", else: "offline"
+    state.publish.("#{state.prefix}/status", payload)
+    {:noreply, state}
   end
 
   @impl true

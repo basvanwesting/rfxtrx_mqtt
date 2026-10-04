@@ -8,6 +8,13 @@ defmodule RfxtrxMqtt.Rfxtrx do
   one waits for the transmitter ACK carrying its sequence number.
   The port may be absent or vanish (USB replug); the server keeps retrying
   instead of crashing, and pending callers get `{:error, :disconnected}`.
+
+  A port that was absent, or lost through a port error, is left alone for
+  `settle_ms` once it is there again: a freshly powered RFXtrx sits in its
+  bootloader for its first seconds, and serial traffic in that window kept it
+  there (LED steady red, no answer to anything; seen with firmware 1052). A
+  handshake that does not reach ready within `handshake_timeout_ms` is
+  abandoned and retried.
   """
 
   use GenServer
@@ -17,6 +24,8 @@ defmodule RfxtrxMqtt.Rfxtrx do
   @reset_delay_ms 300
   @ack_timeout_ms 5_000
   @reconnect_ms 5_000
+  @settle_ms 10_000
+  @handshake_timeout_ms 5_000
 
   defstruct uart: nil,
             uart_mod: Circuits.UART,
@@ -27,11 +36,20 @@ defmodule RfxtrxMqtt.Rfxtrx do
             seq: 0,
             status: nil,
             ready: false,
+            # false once the port was seen absent or lost: it may be booting.
+            settled: true,
+            # refs of the one pending connect attempt and the one running handshake;
+            # a timer message carrying another ref is stale.
+            connect: nil,
+            handshake: nil,
             pending: nil,
             queue: :queue.new(),
+            on_ready_change: nil,
             reset_delay_ms: @reset_delay_ms,
             ack_timeout_ms: @ack_timeout_ms,
-            reconnect_ms: @reconnect_ms
+            reconnect_ms: @reconnect_ms,
+            settle_ms: @settle_ms,
+            handshake_timeout_ms: @handshake_timeout_ms
 
   # -- API --------------------------------------------------------------------
 
@@ -56,6 +74,16 @@ defmodule RfxtrxMqtt.Rfxtrx do
   @doc "Interface status as reported after connect, or nil when not connected."
   def status(server \\ __MODULE__), do: GenServer.call(server, :status)
 
+  @doc """
+  Whether commands are transmitted: the port is open and the receiver started.
+  A server that is down (between a crash and its restart) is not ready.
+  """
+  def ready?(server \\ __MODULE__) do
+    GenServer.call(server, :ready?)
+  catch
+    :exit, _ -> false
+  end
+
   # -- Callbacks --------------------------------------------------------------
 
   @impl true
@@ -67,32 +95,41 @@ defmodule RfxtrxMqtt.Rfxtrx do
       uart_mod: uart_mod,
       uart_pid: uart_pid,
       port: Keyword.get(opts, :port, Application.fetch_env!(:rfxtrx_mqtt, :rfxtrx_port)),
+      on_ready_change:
+        Keyword.get(opts, :on_ready_change, &RfxtrxMqtt.Covers.publish_availability/0),
       reset_delay_ms: Keyword.get(opts, :reset_delay_ms, @reset_delay_ms),
       ack_timeout_ms: Keyword.get(opts, :ack_timeout_ms, @ack_timeout_ms),
-      reconnect_ms: Keyword.get(opts, :reconnect_ms, @reconnect_ms)
+      reconnect_ms: Keyword.get(opts, :reconnect_ms, @reconnect_ms),
+      settle_ms: Keyword.get(opts, :settle_ms, @settle_ms),
+      handshake_timeout_ms: Keyword.get(opts, :handshake_timeout_ms, @handshake_timeout_ms)
     }
+
+    # A restart after a crash while ready would otherwise leave the last
+    # announced readiness standing.
+    state.on_ready_change.()
 
     {:ok, state, {:continue, :connect}}
   end
 
   @impl true
   def handle_continue(:connect, state) do
-    with {:ok, device} <- resolve_device(state.port),
-         :ok <- state.uart_mod.open(state.uart_pid, device, speed: 38_400, active: true) do
-      Logger.info("rfxtrx: opened #{device}, resetting")
-      :ok = state.uart_mod.write(state.uart_pid, Packet.reset())
-      Process.send_after(self(), :request_status, state.reset_delay_ms)
-      {:noreply, %{state | device: device, buffer: <<>>, status: nil, ready: false}}
-    else
+    case resolve_device(state.port) do
+      {:ok, device} when state.settled ->
+        open(state, device)
+
+      {:ok, device} ->
+        Logger.info("rfxtrx: #{device} may be booting, waiting #{state.settle_ms} ms")
+        {:noreply, schedule_connect(%{state | settled: true}, state.settle_ms)}
+
       {:error, reason} ->
-        Logger.warning("rfxtrx: cannot open #{state.port}: #{inspect(reason)}, retrying")
-        Process.send_after(self(), :connect, state.reconnect_ms)
-        {:noreply, %{state | device: nil, status: nil}}
+        {:noreply, retry(state, reason)}
     end
   end
 
   @impl true
   def handle_call(:status, _from, state), do: {:reply, state.status, state}
+
+  def handle_call(:ready?, _from, state), do: {:reply, state.ready, state}
 
   def handle_call({:send, _}, _from, %{device: nil} = state),
     do: {:reply, {:error, :disconnected}, state}
@@ -103,7 +140,10 @@ defmodule RfxtrxMqtt.Rfxtrx do
   end
 
   @impl true
-  def handle_info(:connect, state), do: {:noreply, state, {:continue, :connect}}
+  def handle_info({:connect, ref}, %{connect: ref} = state),
+    do: {:noreply, %{state | connect: nil}, {:continue, :connect}}
+
+  def handle_info({:connect, _stale}, state), do: {:noreply, state}
 
   def handle_info(:request_status, %{device: nil} = state), do: {:noreply, state}
 
@@ -114,9 +154,14 @@ defmodule RfxtrxMqtt.Rfxtrx do
     {:noreply, state}
   end
 
+  # Left over from a port that is already closed.
+  def handle_info({:circuits_uart, _dev, _}, %{device: nil} = state), do: {:noreply, state}
+
+  # A port error is how an unplug shows; the device may be back, and booting,
+  # before the next connect attempt ever sees it absent.
   def handle_info({:circuits_uart, _dev, {:error, reason}}, state) do
     Logger.warning("rfxtrx: port error #{inspect(reason)}, reconnecting")
-    {:noreply, disconnect(state)}
+    {:noreply, disconnect(%{state | settled: false})}
   end
 
   def handle_info({:circuits_uart, _dev, data}, state) when is_binary(data) do
@@ -133,7 +178,47 @@ defmodule RfxtrxMqtt.Rfxtrx do
 
   def handle_info({:ack_timeout, _stale}, state), do: {:noreply, state}
 
+  def handle_info({:handshake_timeout, ref}, %{handshake: ref} = state) do
+    Logger.warning("rfxtrx: no handshake from #{state.device}, reconnecting")
+    {:noreply, disconnect(state)}
+  end
+
+  def handle_info({:handshake_timeout, _stale}, state), do: {:noreply, state}
+
   # -- Internals --------------------------------------------------------------
+
+  defp open(state, device) do
+    case state.uart_mod.open(state.uart_pid, device, speed: 38_400, active: true) do
+      :ok ->
+        Logger.info("rfxtrx: opened #{device}, resetting")
+        :ok = state.uart_mod.write(state.uart_pid, Packet.reset())
+        Process.send_after(self(), :request_status, state.reset_delay_ms)
+        handshake = make_ref()
+        Process.send_after(self(), {:handshake_timeout, handshake}, state.handshake_timeout_ms)
+        {:noreply, %{state | device: device, buffer: <<>>, status: nil, handshake: handshake}}
+
+      {:error, reason} ->
+        {:noreply, retry(state, reason)}
+    end
+  end
+
+  defp retry(state, reason) do
+    Logger.warning("rfxtrx: cannot open #{state.port}: #{inspect(reason)}, retrying")
+    schedule_connect(%{state | device: nil, status: nil, settled: false}, state.reconnect_ms)
+  end
+
+  defp schedule_connect(state, delay_ms) do
+    connect = make_ref()
+    Process.send_after(self(), {:connect, connect}, delay_ms)
+    %{state | connect: connect}
+  end
+
+  defp set_ready(%{ready: ready} = state, ready), do: state
+
+  defp set_ready(state, ready) do
+    state.on_ready_change.()
+    %{state | ready: ready}
+  end
 
   defp handle_frame({:status, _seq, status}, state) do
     Logger.info("rfxtrx: transceiver #{status.transceiver_type} fw #{status.firmware}, starting")
@@ -144,14 +229,14 @@ defmodule RfxtrxMqtt.Rfxtrx do
 
   defp handle_frame({:started, _seq, "Copyright RFXCOM"}, state) do
     Logger.info("rfxtrx: ready")
-    maybe_transmit(%{state | ready: true})
+    maybe_transmit(set_ready(%{state | handshake: nil}, true))
   end
 
   # Early firmware does not know the start command and is operational without it.
   defp handle_frame({:not_understood, _seq}, %{ready: false, status: status} = state)
        when status != nil do
     Logger.info("rfxtrx: ready (firmware without start command)")
-    maybe_transmit(%{state | ready: true})
+    maybe_transmit(set_ready(%{state | handshake: nil}, true))
   end
 
   defp handle_frame({:ack, seq, code}, %{pending: {_, seq, _}} = state),
@@ -202,17 +287,17 @@ defmodule RfxtrxMqtt.Rfxtrx do
     for {from, _} <- :queue.to_list(state.queue),
         do: GenServer.reply(from, {:error, :disconnected})
 
-    Process.send_after(self(), :connect, state.reconnect_ms)
-
     %{
       state
       | device: nil,
         status: nil,
-        ready: false,
+        handshake: nil,
         pending: nil,
         queue: :queue.new(),
         buffer: <<>>
     }
+    |> set_ready(false)
+    |> schedule_connect(state.reconnect_ms)
   end
 
   # Accepts a glob, a symlink (e.g. /dev/serial/by-id/...) or a device name;

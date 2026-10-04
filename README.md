@@ -13,6 +13,12 @@ server sends reset (14 bytes), waits 300 ms, flushes, requests status, and
 sends start receiver; the "Copyright RFXCOM" answer marks it ready. Without
 the start the device ACKs transmit commands but sends nothing.
 
+A port that was absent or lost is left alone for 10 s after it appears: a
+freshly powered RFXtrx is in its bootloader for its first seconds, and serial
+traffic in that window kept it there (LED steady red, no answer; seen with
+firmware 1052, cured by a power cycle with the server stopped). A handshake
+that is not ready within 5 s is dropped and retried, with a warning in the log.
+
 | Protocol | Packet | Commands |
 |---|---|---|
 | `blinds_t7` (Forest) | `<<0x09, 0x19, 0x07, seq, id::28, unit::4, cmnd, 0>>` | 0 open, 1 close, 2 stop, 3 confirm (pair) |
@@ -53,7 +59,7 @@ copies an original one (Somfy rolling codes would desync the original).
 
 ## MQTT topics
 
-    rfxtrx/status                          online | offline (last will), retained
+    rfxtrx/status                          -> online | offline, retained
     rfxtrx/<device>/set                    <- OPEN | CLOSE | STOP
     rfxtrx/<device>/target_position/set    <- 0..100  (<= 50 closes, > 50 opens)
     rfxtrx/<device>/target_position        -> 0 | 100, retained
@@ -64,6 +70,9 @@ Command topics (`.../set`) and state topics are disjoint on purpose: the
 retained state echo must never come back as a command. Retained
 `current_position` doubles as persistence: on start the server subscribes to
 it and adopts the broker's value.
+
+`status` is online only while the RFXtrx is ready to transmit; an unplugged
+or unanswering RFXtrx is offline, as is a stopped server (last will).
 
 For `rfy`, open is up and close is down.
 

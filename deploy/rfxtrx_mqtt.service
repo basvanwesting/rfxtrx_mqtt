@@ -7,8 +7,8 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=%h/.config/rfxtrx_mqtt/env
-ExecStart=%h/workspace/rfxtrx_mqtt/_build/prod/rel/rfxtrx_mqtt/bin/rfxtrx_mqtt start
-ExecStop=%h/workspace/rfxtrx_mqtt/_build/prod/rel/rfxtrx_mqtt/bin/rfxtrx_mqtt stop
+ExecStart=%h/Work/rfxtrx_mqtt/_build/prod/rel/rfxtrx_mqtt/bin/rfxtrx_mqtt start
+ExecStop=%h/Work/rfxtrx_mqtt/_build/prod/rel/rfxtrx_mqtt/bin/rfxtrx_mqtt stop
 Restart=on-failure
 RestartSec=5
 
